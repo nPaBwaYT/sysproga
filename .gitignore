@@ -1,0 +1,6 @@
+.vscode/*
+**/*.out
+
+z_*
+users
+*.pdf

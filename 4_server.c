@@ -355,23 +355,17 @@ int game_process(msg_buffer *msg, HashTable *t) {
 }
 
 
-void *handle(void *args) {
+void *listen(void *args) {
 
-    int *kill = ((int **)args)[0];
-    int *exit = ((int **)args)[1];
+    int *kill = (int *)args;
+    char cmd;
 
-    while (!(*exit)) {
-        char *line = NULL;
-        size_t len = 0;
-        getline(&line, &len, stdin);
+    while (!(*kill)) {
+        cmd = fgetc(stdin);
 
-        if (strcmp(line, "kill\n") == 0) {
+        if (cmd == 'k' || cmd == -1) {
             *kill = 1;
-        } else if (strcmp(line, "exit\n") == 0) {
-            *exit = 1;
         }
-
-        free(line);
     }
     return NULL;
 }
@@ -379,71 +373,65 @@ void *handle(void *args) {
 int main() {
 
     int kill = 0;
-    int exit = 0;
-    pthread_t handler;
+    pthread_t listener;
 
-    int *args[2];
-    args[0] = &kill;
-    args[1] = &exit;
+    pthread_create(&listener, NULL, listen, (void *)(&kill));
 
-    pthread_create(&handler, NULL, handle, (void *)args);
-
-    while (!exit) {
-        key_t key = ftok("/tmp", PROJECT_ID);
-        if (key == -1) {
-            printf("Ошибка получения ключа\n");
-            return -1;
-        }
-
-        int msgid = msgget(key, IPC_CREAT | 0666);
-        if (msgid == -1) {
-            printf("Ошибка в получении id очереди\n");
-            return -1;
-        }
-
-        HashTable *table = create_table();
-        if (!table) {
-            msgctl(msgid, IPC_RMID, NULL);
-            return -1;
-        } printf("Сервер запущен. Ожидание PING...\n");
-        msg_buffer message;
-
-        kill = 0;
-
-        while (!kill && !exit) {
-            if (msgrcv(msgid, &message, sizeof(msg_buffer) - sizeof(long), 0, IPC_NOWAIT) == -1) {
-                continue;
-            }
-            if (!strcmp(message.msg, "PING")) {
-                int client_msgid = msgget(message.client_queue_key, 0666);
-                if (client_msgid == -1) {
-                    continue;
-                }         
-                    msg_buffer pong_msg = {
-                    .mtype = 2,
-                    .client_id = getpid(),
-                    .status_code = 1,
-                };
-                strcpy(pong_msg.msg, "PONG");
-                if (msgsnd(client_msgid, &pong_msg, sizeof(pong_msg) - sizeof(long), 0) == -1) {
-                    continue;
-                } else {
-                    printf("Отправлен PONG в очередь %d\n", message.client_queue_key);
-                } 
-                continue;
-            }     
-            printf("Запрос от: %ld. Команда: %s\n", message.client_id, message.command);
-            message.mtype = message.client_id;
-            int res = game_process(&message, table);
-            message.status_code = res;
-            msgsnd(msgid, &message, sizeof(msg_buffer) - sizeof(long), 0);
-        }
-
-        free_table(table);
-        msgctl(msgid, IPC_RMID, NULL);
-        printf("Сервер завершил работу.\n");
+    key_t key = ftok("/tmp", PROJECT_ID);
+    if (key == -1) {
+        printf("Ошибка получения ключа\n");
+        return -1;
     }
 
-    pthread_join(handler, NULL);
+    int msgid = msgget(key, IPC_CREAT | 0666);
+    if (msgid == -1) {
+        printf("Ошибка в получении id очереди\n");
+        return -1;
+    }
+
+    HashTable *table = create_table();
+    if (!table) {
+        msgctl(msgid, IPC_RMID, NULL);
+        return -1;
+    } printf("Сервер запущен. Ожидание PING...\n");
+    msg_buffer message;
+
+    kill = 0;
+
+    while (!kill) {
+        if (msgrcv(msgid, &message, sizeof(msg_buffer) - sizeof(long), 0, IPC_NOWAIT) == -1) {
+            continue;
+        }
+        if (!strcmp(message.msg, "PING")) {
+            int client_msgid = msgget(message.client_queue_key, 0666);
+            if (client_msgid == -1) {
+                continue;
+            }         
+                msg_buffer pong_msg = {
+                .mtype = 2,
+                .client_id = getpid(),
+                .status_code = 1,
+            };
+            strcpy(pong_msg.msg, "PONG");
+            if (msgsnd(client_msgid, &pong_msg, sizeof(pong_msg) - sizeof(long), 0) == -1) {
+                continue;
+            } else {
+                printf("Отправлен PONG в очередь %d\n", message.client_queue_key);
+            } 
+            continue;
+        }     
+        printf("Запрос от: %ld. Команда: %s\n", message.client_id, message.command);
+        message.mtype = message.client_id;
+        int res = game_process(&message, table);
+        message.status_code = res;
+        msgsnd(msgid, &message, sizeof(msg_buffer) - sizeof(long), 0);
+    }
+
+    free_table(table);
+    msgctl(msgid, IPC_RMID, NULL);
+    printf("Сервер завершил работу.\n");
+    
+
+    pthread_join(listener, NULL);
     return 0; 
 }

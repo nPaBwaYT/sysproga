@@ -54,23 +54,18 @@ void list_files(char *path)
 }
 
 
-void *handle(void *args) {
 
-    int *kill = ((int **)args)[0];
-    int *exit = ((int **)args)[1];
+void *listen(void *args) {
 
-    while (!(*exit)) {
-        char *line = NULL;
-        size_t len = 0;
-        getline(&line, &len, stdin);
+    int *kill = (int *)args;
+    char cmd;
 
-        if (strcmp(line, "kill\n") == 0) {
+    while (!(*kill)) {
+        cmd = fgetc(stdin);
+
+        if (cmd == 'k' || cmd == -1) {
             *kill = 1;
-        } else if (strcmp(line, "exit\n") == 0) {
-            *exit = 1;
         }
-
-        free(line);
     }
     return NULL;
 }
@@ -79,82 +74,76 @@ void *handle(void *args) {
 int main()
 {
     int kill = 0;
-    int exit = 0;
-    pthread_t handler;
+    pthread_t listener;
 
-    int *args[2];
-    args[0] = &kill;
-    args[1] = &exit;
+    pthread_create(&listener, NULL, listen, (void *)(&kill));
 
-    pthread_create(&handler, NULL, handle, (void *)args);
+    key_t key;
+    int msgid;
+    message msg;
 
-    while (!exit) {
+    key = ftok("/tmp", PROJECT_ID);
+    if (key == -1)
+    {
+        return -1;
+    }
 
-        key_t key;
-        int msgid;
-        message msg;
+    msgid = msgget(key, IPC_CREAT | 0666);
+    if (msgid == -1)
+    {
 
-        key = ftok("/tmp", PROJECT_ID);
-        if (key == -1)
-        {
-            return -1;
+        return -1;
+    }
+
+    printf("Сервер готов к приему сообщений...\n");
+    kill = 0;
+
+    while (!kill) {
+        
+        if (msgrcv(msgid, &msg, sizeof(message) - sizeof(long), 0, IPC_NOWAIT) == -1) {
+            continue;
         }
 
-        msgid = msgget(key, IPC_CREAT | 0666);
-        if (msgid == -1)
+        if (!strcmp(msg.msg_text, "PING"))
         {
-
-            return -1;
-        }
-
-        printf("Сервер готов к приему сообщений...\n");
-        kill = 0;
-
-        while (!kill && !exit) {
-            
-            if (msgrcv(msgid, &msg, sizeof(message) - sizeof(long), 0, IPC_NOWAIT) == -1) {
-                continue;
-            }
-
-            if (!strcmp(msg.msg_text, "PING"))
+            int client_msgid = msgget(msg.client_queue_key, 0666);
+            if (client_msgid == -1)
             {
-                int client_msgid = msgget(msg.client_queue_key, 0666);
-                if (client_msgid == -1)
-                {
-                    continue;
-                }
-                message pong_msg = {
-                    .msg_type = 2,
-                };
-                strcpy(pong_msg.msg_text, "PONG");
-                if (msgsnd(client_msgid, &pong_msg, sizeof(pong_msg) - sizeof(long), 0) == -1)
-                {
-                    continue;
-                }
-                else
-                {
-                    printf("Отправлен PONG в очередь %d\n", msg.client_queue_key);
-                }
                 continue;
             }
-
-            if (strcmp(msg.msg_text, "exit") == 0)
+            message pong_msg = {
+                .msg_type = 2,
+            };
+            strcpy(pong_msg.msg_text, "PONG");
+            if (msgsnd(client_msgid, &pong_msg, sizeof(pong_msg) - sizeof(long), 0) == -1)
             {
                 continue;
             }
             else
             {
-                printf("Получен запрос на просмотр каталога: %s\n", msg.msg_text);
-                list_files(msg.msg_text);
+                printf("Отправлен PONG в очередь %d\n", msg.client_queue_key);
             }
+            continue;
         }
 
-        if (msgctl(msgid, IPC_RMID, NULL) == -1)
+        if (strcmp(msg.msg_text, "exit") == 0)
         {
-            return -1;
+            continue;
         }
-
-        printf("Сервер завершил работу.\n");
+        else
+        {
+            printf("Получен запрос на просмотр каталога: %s\n", msg.msg_text);
+            list_files(msg.msg_text);
+        }
     }
+
+    if (msgctl(msgid, IPC_RMID, NULL) == -1)
+    {
+        return -1;
+    }
+
+    printf("Сервер завершил работу.\n");
+    pthread_join(listener, NULL);
+    
     return 0;
 }
